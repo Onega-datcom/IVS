@@ -179,6 +179,11 @@ language sql immutable as $$
   select coalesce(array(select v::real from jsonb_array_elements_text(j) with ordinality as t(v, i) order by i), '{}')
 $$;
 
+create or replace function iv_normalize_id(p_id text) returns text
+language sql immutable as $$
+  select regexp_replace(upper(coalesce(p_id, '')), '[^A-Z0-9]', '', 'g')
+$$;
+
 create or replace function iv_fail(msg text, extra jsonb default '{}') returns jsonb
 language sql immutable as $$ select jsonb_build_object('ok', false, 'message', msg) || extra $$;
 
@@ -225,7 +230,7 @@ language sql stable set search_path = public as $$
     then 'Too many failed attempts. Try again after ' || to_char(u.locked_until at time zone 'Asia/Manila', 'HH12:MI AM') || '.' end
 $$;
 
-revoke execute on function iv_face_dist(real[], real[]), iv_json_to_vec(jsonb), iv_fail(text, jsonb),
+revoke execute on function iv_face_dist(real[], real[]), iv_json_to_vec(jsonb), iv_normalize_id(text), iv_fail(text, jsonb),
   iv_log(bigint, text, text, real, text), iv_user_from_token(text), iv_new_session(bigint),
   iv_draft_from_token(text), iv_new_draft_session(bigint), iv_lock_msg(iv_users)
   from public, anon, authenticated;
@@ -243,24 +248,20 @@ begin
   if not coalesce(p_consent, false) then return iv_fail('You must agree to the consent notice to continue.'); end if;
   if em !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then return iv_fail('Enter a valid email address.'); end if;
   if coalesce(p_pin, '') !~ '^\d{6}$' then return iv_fail('The backup PIN must be exactly 6 digits.'); end if;
-  if not exists (select 1 from iv_roles where key = p_role) then return iv_fail('Choose the role you are applying for.'); end if;
   select * into existing from iv_users where email = em;
   if existing.id is not null then
-    if existing.status = 'unverified' and existing.pin_hash = crypt(p_pin, existing.pin_hash) then
-      perform iv_log(existing.id, 'signup', 'resumed', null, '');
-      return jsonb_build_object('ok', true, 'token', iv_new_session(existing.id), 'resumed', true);
-    end if;
-    return iv_fail('This email is already registered. Use the PIN option on the login page to continue.');
+    return iv_fail('This email is already in use and cannot be registered again.');
   end if;
   select * into draft from iv_signup_drafts where email = em;
   if draft.id is not null then
-    if draft.pin_hash = crypt(p_pin, draft.pin_hash) then
-      return jsonb_build_object('ok', true, 'token', iv_new_draft_session(draft.id), 'resumed', true);
-    end if;
-    return iv_fail('This email already has an unfinished registration. Enter the same PIN to resume it.');
+    return iv_fail('This email already has a registration in progress and cannot be used again.');
   end if;
-  insert into iv_signup_drafts (email, pin_hash, requested_role)
-  values (em, crypt(p_pin, gen_salt('bf')), p_role) returning id into uid;
+  begin
+    insert into iv_signup_drafts (email, pin_hash, requested_role)
+    values (em, crypt(p_pin, gen_salt('bf')), 'receptionist') returning id into uid;
+  exception when unique_violation then
+    return iv_fail('This email is already in use and cannot be registered again.');
+  end;
   return jsonb_build_object('ok', true, 'token', iv_new_draft_session(uid));
 end $$;
 
@@ -294,19 +295,11 @@ begin
   select * into u from iv_users where email = lower(trim(coalesce(p_email, '')));
   if u.id is null then
     select * into draft from iv_signup_drafts where email = lower(trim(coalesce(p_email, '')));
-    if draft.id is not null and draft.pin_locked_until is not null and draft.pin_locked_until > now() then
-      return iv_fail('Too many tries. Wait a few minutes and try again.');
+    if draft.id is not null and draft.pin_hash = crypt(coalesce(p_pin, ''), draft.pin_hash) then
+      delete from iv_signup_drafts where id = draft.id;
+      return iv_fail('Your unfinished registration was cleared. Sign up again to start over.');
     end if;
-    if draft.id is null or draft.pin_hash <> crypt(coalesce(p_pin, ''), draft.pin_hash) then
-      if draft.id is not null then
-        update iv_signup_drafts set pin_fails = case when pin_fails >= 4 then 0 else pin_fails + 1 end,
-          pin_locked_until = case when pin_fails >= 4 then now() + interval '15 minutes' else pin_locked_until end
-        where id = draft.id;
-      end if;
-      return iv_fail('Email or PIN is incorrect.');
-    end if;
-    update iv_signup_drafts set pin_fails = 0 where id = draft.id;
-    return jsonb_build_object('ok', true, 'token', iv_new_draft_session(draft.id));
+    return iv_fail('Email or PIN is incorrect.');
   end if;
   if u.id is not null and u.pin_locked_until is not null and u.pin_locked_until > now() then
     return iv_fail('Too many tries. Wait a few minutes and try again.');
@@ -363,12 +356,12 @@ begin
     else
       return iv_fail('Unknown step.');
     end if;
-    if n >= 3 then
+    if n >= 5 then
       update iv_signup_drafts set id_attempts = 0, face_attempts = 0,
         locked_until = now() + interval '15 minutes' where id = draft.id;
       return jsonb_build_object('ok', true, 'attempts_left', 0, 'locked', true);
     end if;
-    return jsonb_build_object('ok', true, 'attempts_left', 3 - n, 'locked', false);
+    return jsonb_build_object('ok', true, 'attempts_left', 5 - n, 'locked', false);
   end if;
   if u.status <> 'unverified' then return iv_fail('Session expired.'); end if;
   if p_kind = 'id' then
@@ -378,16 +371,16 @@ begin
   else
     return iv_fail('Unknown step.');
   end if;
-  if n >= 3 then
+  if n >= 5 then
     update iv_users set id_attempts = 0, face_attempts = 0, locked_until = now() + interval '15 minutes' where id = u.id;
     return jsonb_build_object('ok', true, 'attempts_left', 0, 'locked', true);
   end if;
-  return jsonb_build_object('ok', true, 'attempts_left', 3 - n, 'locked', false);
+  return jsonb_build_object('ok', true, 'attempts_left', 5 - n, 'locked', false);
 end $$;
 
 create or replace function iv_save_id(p_token text, p_id_type text, p_fields jsonb, p_confidence real, p_descriptor real[]) returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
-declare u iv_users; draft iv_signup_drafts; lm text;
+declare u iv_users; draft iv_signup_drafts; lm text; normalized_id text;
 begin
   select * into draft from iv_draft_from_token(p_token);
   if draft.id is not null then
@@ -398,9 +391,12 @@ begin
     if coalesce(p_fields->>'full_name', '') = '' or coalesce(p_fields->>'dob', '') = '' or coalesce(p_fields->>'id_number', '') = '' then
       return iv_fail('Required ID details are missing.');
     end if;
+    normalized_id := iv_normalize_id(p_fields->>'id_number');
+    if normalized_id = '' then return iv_fail('Enter a valid ID number.'); end if;
+    perform pg_advisory_xact_lock(hashtext(normalized_id));
     if array_length(p_descriptor, 1) is distinct from 128 then return iv_fail('No face template was received from the ID photo.'); end if;
-    if exists (select 1 from iv_id_records where id_number = p_fields->>'id_number')
-       or exists (select 1 from iv_signup_drafts where id_number = p_fields->>'id_number' and id <> draft.id) then
+    if exists (select 1 from iv_id_records where iv_normalize_id(id_number) = normalized_id)
+       or exists (select 1 from iv_signup_drafts where iv_normalize_id(id_number) = normalized_id and id <> draft.id) then
       return iv_fail('This ID is already registered to another account.');
     end if;
     update iv_signup_drafts set
@@ -420,8 +416,12 @@ begin
   if coalesce(p_fields->>'full_name', '') = '' or coalesce(p_fields->>'dob', '') = '' or coalesce(p_fields->>'id_number', '') = '' then
     return iv_fail('Required ID details are missing.');
   end if;
+  normalized_id := iv_normalize_id(p_fields->>'id_number');
+  if normalized_id = '' then return iv_fail('Enter a valid ID number.'); end if;
+  perform pg_advisory_xact_lock(hashtext(normalized_id));
   if array_length(p_descriptor, 1) is distinct from 128 then return iv_fail('No face template was received from the ID photo.'); end if;
-  if exists (select 1 from iv_id_records where id_number = p_fields->>'id_number' and user_id <> u.id) then
+  if exists (select 1 from iv_id_records where iv_normalize_id(id_number) = normalized_id and user_id <> u.id)
+     or exists (select 1 from iv_signup_drafts where iv_normalize_id(id_number) = normalized_id) then
     return iv_fail('This ID is already registered to another account.');
   end if;
   insert into iv_id_records (user_id, id_type, id_number, full_name, dob, address, expiry, ocr_confidence, ocr_raw, id_descriptor)
@@ -461,7 +461,7 @@ begin
     for f in select value from jsonb_array_elements(p_frames) loop
       pose := f->>'pose';
       d := iv_json_to_vec(f->'descriptor');
-      if pose not in ('straight', 'left', 'right', 'closer', 'farther') or array_length(d, 1) is distinct from 128 then
+      if pose not in ('straight', 'blink', 'closer', 'farther') or array_length(d, 1) is distinct from 128 then
         return iv_fail('Invalid capture data. Repeat the face capture.');
       end if;
       poses := poses || pose;
@@ -506,7 +506,7 @@ begin
   for f in select value from jsonb_array_elements(p_frames) loop
     pose := f->>'pose';
     d := iv_json_to_vec(f->'descriptor');
-    if pose not in ('straight', 'left', 'right', 'closer', 'farther') or array_length(d, 1) is distinct from 128 then
+    if pose not in ('straight', 'blink', 'closer', 'farther') or array_length(d, 1) is distinct from 128 then
       return iv_fail('Invalid capture data. Repeat the face capture.');
     end if;
     poses := poses || pose;
@@ -566,7 +566,7 @@ end $$;
 create or replace function iv_save_info(p_token text, p_fields jsonb) returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
-  u iv_users; draft iv_signup_drafts; r iv_id_records; v_dob date; yrs int; new_user_id bigint;
+  u iv_users; draft iv_signup_drafts; r iv_id_records; v_dob date; yrs int; new_user_id bigint; normalized_id text;
   v_token_hash text := encode(digest(coalesce(p_token, ''), 'sha256'), 'hex');
 begin
   select * into draft from iv_draft_from_token(p_token);
@@ -577,11 +577,14 @@ begin
     if coalesce(trim(p_fields->>'full_name'), '') = '' or coalesce(trim(p_fields->>'id_number'), '') = '' then
       return iv_fail('Full name and ID number are required.');
     end if;
+    normalized_id := iv_normalize_id(p_fields->>'id_number');
+    if normalized_id = '' then return iv_fail('Enter a valid ID number.'); end if;
+    perform pg_advisory_xact_lock(hashtext(normalized_id));
     begin v_dob := (p_fields->>'dob')::date; exception when others then return iv_fail('Enter a valid date of birth.'); end;
     yrs := date_part('year', age(v_dob));
     if v_dob > current_date or yrs > 110 then return iv_fail('Enter a valid date of birth.'); end if;
-    if exists (select 1 from iv_id_records where id_number = trim(p_fields->>'id_number'))
-       or exists (select 1 from iv_signup_drafts where id_number = trim(p_fields->>'id_number') and id <> draft.id) then
+    if exists (select 1 from iv_id_records where iv_normalize_id(id_number) = normalized_id)
+       or exists (select 1 from iv_signup_drafts where iv_normalize_id(id_number) = normalized_id and id <> draft.id) then
       return iv_fail('This ID is already registered to another account.');
     end if;
     if exists (select 1 from iv_users where email = draft.email) then
@@ -615,9 +618,16 @@ begin
   if coalesce(trim(p_fields->>'full_name'), '') = '' or coalesce(trim(p_fields->>'id_number'), '') = '' then
     return iv_fail('Full name and ID number are required.');
   end if;
+  normalized_id := iv_normalize_id(p_fields->>'id_number');
+  if normalized_id = '' then return iv_fail('Enter a valid ID number.'); end if;
+  perform pg_advisory_xact_lock(hashtext(normalized_id));
   begin v_dob := (p_fields->>'dob')::date; exception when others then return iv_fail('Enter a valid date of birth.'); end;
   yrs := date_part('year', age(v_dob));
   if v_dob > current_date or yrs > 110 then return iv_fail('Enter a valid date of birth.'); end if;
+  if exists (select 1 from iv_id_records where iv_normalize_id(id_number) = normalized_id and user_id <> u.id)
+     or exists (select 1 from iv_signup_drafts where iv_normalize_id(id_number) = normalized_id) then
+    return iv_fail('This ID is already registered to another account.');
+  end if;
   update iv_id_records set full_name = trim(p_fields->>'full_name'), dob = v_dob, address = nullif(trim(p_fields->>'address'), ''),
          id_number = trim(p_fields->>'id_number'), expiry = nullif(p_fields->>'expiry', '')::date,
          final_status = 'verified', updated_at = now()
@@ -627,7 +637,7 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
--- Face login: finds the closest approved face. Liveness (head turn) is checked in the browser.
+-- Face login: finds the closest approved face. Liveness (blink and distance changes) is checked in the browser.
 create or replace function iv_face_login(p_descriptor real[]) returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare ids bigint[]; ds real[]; recent int;
@@ -666,9 +676,8 @@ begin
   select * into u from iv_user_from_token(p_token);
   if u.id is null or u.status <> 'active' or u.role <> 'admin' then return iv_fail('Admins only.'); end if;
   return jsonb_build_object('ok', true, 'items', coalesce((
-    select jsonb_agg(jsonb_build_object('id', x.id, 'email', x.email, 'requested_role', x.requested_role, 'full_name', r.full_name,
-      'dob', r.dob, 'address', r.address, 'id_type', r.id_type, 'id_number', r.id_number,
-      'face_distance', r.face_distance, 'ocr_confidence', r.ocr_confidence) order by x.created_at)
+    select jsonb_agg(jsonb_build_object('id', x.id, 'email', x.email, 'full_name', r.full_name,
+      'dob', r.dob, 'address', r.address) order by x.created_at)
     from iv_users x join iv_id_records r on r.user_id = x.id where x.status = 'pending'), '[]'::jsonb));
 end $$;
 
@@ -704,8 +713,8 @@ end $$;
 --  email,
 --  pin_hash,
 --  requested_role,
--- role,
--- status
+--  role,
+--  status
 --)
 --values (
 --  'admin@test.com',

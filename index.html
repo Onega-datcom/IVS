@@ -31,17 +31,20 @@
     <!-- FACE LOGIN -->
     <section id="screen-login" class="card" hidden>
       <h1>LOG IN</h1>
-      <p class="sub">Look at the camera, then follow the instruction.</p>
-      <div class="cam"><video id="login-video" playsinline muted></video><div id="login-cd" class="cd"></div><div id="login-say" class="say">Press Start scan when you are ready.</div></div>
-      <div id="msg-login" class="alert" hidden></div>
-      <button id="btn-login-start" class="btn" type="button">Start scan</button>
-      <button id="show-pin" class="btn-link" type="button">Can't scan? Use your PIN</button>
+      <div id="face-login">
+        <p class="sub">Look at the camera, then follow the instruction.</p>
+        <div class="cam"><video id="login-video" playsinline muted></video><div id="login-say" class="say">Press Start scan when you are ready.</div></div>
+        <div id="msg-login" class="alert" hidden></div>
+        <button id="btn-login-start" class="btn" type="button">Start scan</button>
+        <button id="show-pin" class="btn-link" type="button">Can't scan? Use your PIN</button>
+      </div>
       <form id="pin-form" hidden>
         <h2>LOGIN</h2>
         <div id="msg-pin" class="alert" hidden></div>
         <label for="pin-email">Email</label><input id="pin-email" type="email" required autocomplete="username">
         <label for="pin-code">6-digit PIN</label><input id="pin-code" type="password" inputmode="numeric" maxlength="6" required autocomplete="current-password">
         <button class="btn alt" type="submit">LOGIN</button>
+        <button id="hide-pin" class="btn-link" type="button">Back to face scan</button>
       </form>
       <button class="btn-link" type="button" data-go="home">Back</button>
     </section>
@@ -49,14 +52,12 @@
     <!-- SIGN UP -->
     <section id="screen-signup" class="card" hidden>
       <h1>SIGN UP</h1>
-      <p class="sub">Your user account is created only after you finish verification. Unfinished progress is saved as a draft; use the same email and PIN to resume after a browser reset.</p>
+      <p class="sub">Your account is submitted after you finish verification. If you leave before submitting, you will need to start again.</p>
       <div id="msg-signup" class="alert" hidden></div>
       <form id="signup-form">
         <label for="su-email">Email</label><input id="su-email" type="email" required autocomplete="email">
         <label for="su-pin">Backup PIN (6 digits)</label><input id="su-pin" type="password" inputmode="numeric" maxlength="6" pattern="\d{6}" required autocomplete="new-password">
-        <label for="su-role">Role you are applying for</label>
-        <select id="su-role" required><option value="">Choose a role</option></select>
-        <label class="check"><input id="su-consent" type="checkbox">
+        <label class="check"><input id="su-consent" type="checkbox" required>
           <span>I agree that my ID details and facial data will be collected and processed for staff identity verification, as described under the Data Privacy Act of 2012 (RA 10173). Only text fields and face templates are stored. The ID image never leaves this device.</span></label>
         <button class="btn" type="submit">Continue to ID upload</button>
       </form>
@@ -70,30 +71,53 @@
       <div id="msg-id" class="alert" hidden></div>
       <label for="id-type">ID type</label>
       <select id="id-type"><option value="">Choose an ID type</option></select>
-      <label for="id-file">Photo of the front of the ID (JPG or PNG, up to 5 MB)</label>
-      <input id="id-file" type="file" accept="image/jpeg,image/png">
-      <img id="id-preview" class="preview" alt="Preview of the uploaded ID" hidden>
+      <p class="sub">Capture the front of your ID with your camera, or choose a JPG/PNG image (up to 5 MB).</p>
+      <div class="row">
+        <button id="btn-id-camera" class="btn alt" type="button">Use camera</button>
+        <button id="btn-id-upload" class="btn alt" type="button">Upload an image</button>
+      </div>
+      <input id="id-file" type="file" accept="image/jpeg,image/png" hidden>
+      <div id="id-camera-wrap" class="cam id-camera" hidden>
+        <video id="id-video" playsinline muted></video>
+        <div class="camera-controls">
+          <button id="btn-id-capture" class="btn" type="button">Capture ID</button>
+          <button id="btn-id-camera-close" class="btn alt" type="button">Close camera</button>
+        </div>
+      </div>
+      <img id="id-preview" class="preview" alt="Preview of the selected ID" hidden>
       <ul class="tips"><li>Place the ID flat on a plain surface in good light.</li><li>Keep the whole card in the photo, with no glare or blur; move closer so the text is readable.</li><li>Use a sample or synthetic ID when demonstrating.</li></ul>
       <p id="id-status" class="note" hidden></p>
       <button id="btn-scan" class="btn" type="button">Scan ID</button>
+      <button id="btn-id-retry" class="btn alt" type="button" hidden>Choose or capture another ID</button>
       <p class="note">The photo is read inside your browser and never uploaded. Only the extracted text and a face template are saved.</p>
+      <button class="btn-link" type="button" data-cancel-signup>Back to home</button>
     </section>
 
     <!-- STEP 2: FACE REGISTRATION + MATCH -->
     <section id="screen-face" class="card wide" hidden>
       <h1>Register and match your face</h1>
-      <p class="sub">The camera automatically captures five poses when it recognizes them. Follow each instruction and hold still briefly.</p>
-      <ul class="tips"><li>Keep one face centered in the guide; look straight, then to the left and right when asked.</li><li>Move closer, then slightly farther away.</li><li>Keep your entire face visible: no cap, mask or hand in front.</li><li>Use even lighting, with no strong light behind you. Each pose is checked before moving on.</li></ul>
-      <div class="cam"><video id="face-video" playsinline muted></video><div id="face-cd" class="cd"></div><div id="face-say" class="say">Press Start capture when you are ready.</div></div>
+      <p class="sub">Follow the live checks: look straight, blink when asked, then move farther and closer.</p>
+      <ul class="tips"><li>Keep one face centered in the guide and follow each instruction.</li><li>Keep your entire face visible: no cap, mask or hand in front.</li><li>Use even lighting, with no strong light behind you. Each action is checked before moving on.</li></ul>
+      <div class="cam face-capture-cam">
+        <video id="face-video" playsinline muted></video>
+        <div id="face-progress" class="face-progress" role="progressbar" aria-label="Current face instruction" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0" aria-valuetext="Waiting for the current instruction">
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+            <path class="face-progress-track" d="M 50 88 A 23 38 0 0 1 50 12 A 23 38 0 0 1 50 88"></path>
+            <path id="face-progress-fill" class="face-progress-fill" d="M 50 88 A 23 38 0 0 1 50 12 A 23 38 0 0 1 50 88"></path>
+          </svg>
+        </div>
+        <div id="face-say" class="say">Press Start capture when you are ready.</div>
+      </div>
       <div id="msg-face" class="alert" hidden></div>
       <button id="btn-face-start" class="btn" type="button">Start capture</button>
       <button id="btn-face-next" class="btn" type="button" hidden>Continue to personal information</button>
+      <button class="btn-link" type="button" data-cancel-signup>Back to home</button>
     </section>
 
     <!-- STEP 3: PERSONAL INFORMATION -->
     <section id="screen-info" class="card wide" hidden>
       <h1>Review your information</h1>
-      <p class="sub">These details were read from your ID. Correct anything the scanner got wrong, then submit.</p>
+      <p class="sub">Verify each detail against your ID. Correct anything the scanner got wrong before submitting.</p>
       <div id="msg-info" class="alert" hidden></div>
       <form id="info-form">
         <label for="in-name">Full name</label><input id="in-name" required>
@@ -104,6 +128,7 @@
         <label for="in-expiry">Expiration date (if the ID has one)</label><input id="in-expiry" type="date">
         <button class="btn" type="submit">Submit for verification</button>
       </form>
+      <button class="btn-link" type="button" data-cancel-signup>Back to home</button>
     </section>
 
     <!-- STEP 4: RESULT -->
