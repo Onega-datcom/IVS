@@ -100,10 +100,10 @@ window.Api = Api;
 
   /* ---------------------------------------------------------- ID text parsing */
   const ID_PATTERNS = {
-    philid:   /\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/,
-    drivers:  /\b[A-Z]\d{2}[- ]?\d{2}[- ]?\d{6}\b/,
-    umid:     /\b\d{4}[- ]?\d{7}[- ]?\d\b/,
-    passport: /\b[A-Z]\d{7}[A-Z]\b/
+    philid:   /\b\d{4}(?:[\s-]{0,3}\d{4}){3}\b/,
+    drivers:  /\b[A-Z]\s?\d{2}[\s-]{0,3}\d{2}[\s-]{0,3}\d{6}\b/,
+    umid:     /\b\d{4}[\s-]{0,3}\d{7}[\s-]{0,3}\d\b/,
+    passport: /\b[A-Z]\s?\d{7}\s?[A-Z]\b/
   };
   const ID_TYPE_MARKERS = {
     philid: /\b(?:PHILSYS|PHIL\s*ID|PHILIPPINE\s+(?:NATIONAL\s+)?IDENTIFICATION(?:\s+SYSTEM)?|NATIONAL\s+ID|PSN|PCN|CRN)\b/i,
@@ -111,16 +111,18 @@ window.Api = Api;
     passport: /\bPASSPORT\b/i,
     umid: /\b(?:UMID|UNIFIED\s+MULTI[- ]PURPOSE(?:\s+ID)?|SSS)\b/i
   };
+  const LAST_NAME_LABEL = /\b(?:last(?:\s*name)?|family(?:\s*name)?|surname|apelyido)\b/i;
   const looksLikeIdNumber = line => Object.values(ID_PATTERNS).some(pattern => pattern.test(line.toUpperCase()));
   const FIELD_LABELS = [
     'date of birth', 'birth date', 'birthdate', 'date birth', 'd.o.b', 'dob', 'date of expiry', 'valid until',
     'residential address', 'current address', 'permanent address', 'place of residence', 'residence',
     'given names', 'given name',
-    'first names', 'first name', 'last name', 'family name', 'middle names', 'middle name', 'middle initial',
+    'first names', 'first name', 'last name', 'last', 'family name', 'family', 'middle names', 'middle name', 'middle initial',
     'middlename', 'gitnang apelyido', 'mga pangalan', 'full name',
     'postal code', 'surname', 'nationality', 'signature', 'address', 'tirahan', 'kapanganakan',
     'apelyido', 'pangalan', 'id number', 'id no', 'crn', 'birth', 'expiry', 'expiration',
-    'license', 'sex', 'name', 'date', 'blood', 'agency'
+    'license', 'sex', 'name', 'date', 'blood', 'agency', 'national id', 'national identification',
+    'philsys', 'passport', 'driver license', "driver's license", 'umid', 'unified multi-purpose id'
   ];
   const fieldLabelRegex = label => new RegExp(
     '\\b' + label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*') + '\\b',
@@ -131,12 +133,47 @@ window.Api = Api;
   const titleCase = s => s.toLowerCase().replace(/(^|[\s.'-])\p{L}/gu, c => c.toUpperCase());
   function cleanName(s) {
     let value = String(s || '').trim();
-    if (/\b(?:given\s*names?|first\s*names?|middle\s*names?|last\s*name|family\s*name|surname|full\s*name|apelyido|mga\s*pangalan|gitnang\s*apelyido)\b/i.test(value)) return '';
-    value = value.replace(/\bmidd\s+e\s+[il1]\b/gi, ' ')
-      .replace(/[^\p{L}.' -]/gu, ' ').replace(/\s+/g, ' ').trim();
-    const words = value.split(' ').filter(Boolean);
+    if (/\b(?:given\s*names?|first\s*names?|last(?:\s*name)?|family(?:\s*name)?|surname|full\s*name|apelyido|mga\s*pangalan|gitnang\s*apelyido)\b/i.test(value)) return '';
+    value = value.replace(/^[\s\-–—•|]+/u, '')
+      .replace(/^(?:yy|yv)\s+(?=\p{L})/iu, '')
+      .replace(/\b(?:midd\s+e(?:\s+[il1])?|middlename|middle\s*(?:names?|initials?)?|middl(?:e)?)\b/gi, ' ')
+      .replace(/(\p{L}{2,})\.\s+(?=\p{L})/gu, '$1 ')
+      .replace(/[^\p{L}' -]/gu, ' ').replace(/\s+/g, ' ').trim();
+    const words = [];
+    for (const word of value.split(' ').filter(Boolean)) {
+      const current = word.toLowerCase().replace(/[^\p{L}]/gu, '');
+      const previous = words.length ? words[words.length - 1].toLowerCase().replace(/[^\p{L}]/gu, '') : '';
+      if (current.length > 1 && current === previous) continue;
+      words.push(word);
+    }
+    let shortened = true;
+    while (shortened) {
+      shortened = false;
+      for (let size = Math.floor(words.length / 2); size > 0; size--) {
+        const first = words.slice(-size * 2, -size).map(word => word.toLowerCase());
+        const second = words.slice(-size).map(word => word.toLowerCase());
+        if (first.every((word, index) => word === second[index])) {
+          words.splice(-size);
+          shortened = true;
+          break;
+        }
+      }
+    }
     if (words.length >= 3 && /^\p{L}$/u.test(words[0])) words.shift();
     return titleCase(words.join(' '));
+  }
+
+  function composeName(given, middle, last) {
+    const givenAndMiddle = cleanName([given, middle].filter(Boolean).join(' '));
+    const givenWords = givenAndMiddle.toLowerCase().split(/\s+/).filter(Boolean);
+    const lastWords = cleanName(last).toLowerCase().split(/\s+/).filter(Boolean);
+    if (!lastWords.length) return givenAndMiddle;
+    for (let start = 0; start <= givenWords.length - lastWords.length; start++) {
+      if (lastWords.every((word, index) => givenWords[start + index] === word)) return givenAndMiddle;
+    }
+    let overlap = Math.min(givenWords.length, lastWords.length);
+    while (overlap > 0 && !givenWords.slice(-overlap).every((word, index) => word === lastWords[index])) overlap--;
+    return cleanName([givenAndMiddle, lastWords.slice(overlap).join(' ')].filter(Boolean).join(' '));
   }
 
   function trimFollowingFields(value) {
@@ -145,7 +182,7 @@ window.Api = Api;
     return trimJunk(match ? value.slice(0, match.index) : value);
   }
 
-  function trimAtFieldLabel(value, currentLabels) {
+  function trimAtFieldLabel(value, currentLabels, preserveMiddleLabel = false) {
     let remaining = value;
     const currentPattern = new RegExp(
       '^(?:\\s*[:/,-]\\s*)?(?:' + currentLabels
@@ -160,22 +197,35 @@ window.Api = Api;
       previous = remaining;
       remaining = remaining.replace(currentPattern, '');
     } while (remaining !== previous);
-    const alternatives = FIELD_LABELS.slice()
+    const ignoredLabels = preserveMiddleLabel
+      ? new Set(['middle names', 'middle name', 'middle initial', 'middlename', 'gitnang apelyido', 'name'])
+      : null;
+    const alternatives = FIELD_LABELS.filter(label => !ignoredLabels || !ignoredLabels.has(label))
       .sort((a, b) => b.length - a.length)
       .map(label => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*'));
     const match = new RegExp('\\b(?:' + alternatives.join('|') + ')\\b', 'i').exec(remaining);
     return trimFollowingFields(match ? remaining.slice(0, match.index) : remaining);
   }
 
-  function valueAfter(lines, labels, take = 1) {
+  function valueAfter(lines, labels, take = 1, preserveMiddleLabel = false) {
     const ordered = labels.slice().sort((a, b) => b.length - a.length);
     for (let i = 0; i < lines.length; i++) {
       for (const lab of ordered) {
         const label = fieldLabelRegex(lab).exec(lines[i]);
         if (!label) continue;
-        if (lab === 'name' && /\b(?:first|last|middle|given)\s$/i.test(lines[i].slice(0, label.index))) continue;
-        const rest = trimAtFieldLabel(lines[i].slice(label.index + label[0].length), labels);
-        if (rest.length >= 2 && !looksLikeLabel(rest)) return rest;
+        if (lab === 'name' && /\b(?:first|last|middle|given|family)\s*$/i.test(lines[i].slice(0, label.index))) continue;
+        const rest = trimAtFieldLabel(lines[i].slice(label.index + label[0].length), labels, preserveMiddleLabel);
+        const labelCheckedRest = preserveMiddleLabel
+          ? rest.replace(/\b(?:middle\s*(?:names?|initials?)?|middlename|middl(?:e)?)\b/gi, ' ')
+          : rest;
+        if (labelCheckedRest.length >= 2 && !looksLikeLabel(labelCheckedRest)) {
+          const valueLines = [rest];
+          for (const line of lines.slice(i + 1)) {
+            if (valueLines.length >= take || looksLikeLabel(line) || looksLikeIdNumber(line) || findDates(line).length) break;
+            valueLines.push(line);
+          }
+          return valueLines.join(' ');
+        }
 
         const next = [];
         for (const line of lines.slice(i + 1)) {
@@ -200,9 +250,26 @@ window.Api = Api;
     return cleanName(parts.slice(1).join(' ') + ' ' + parts[0] + ' ' + suffix);
   }
 
+  function nameFromHeaderRow(header, values) {
+    const columns = [
+      { key: 'last', pattern: LAST_NAME_LABEL },
+      { key: 'given', pattern: /\b(?:first\s*names?|given\s*names?|mga\s*pangalan)\b/i }
+    ].map(column => {
+      const match = column.pattern.exec(header);
+      return match ? { key: column.key, start: match.index } : null;
+    }).filter(Boolean).sort((a, b) => a.start - b.start);
+    if (columns.length < 2) return '';
+
+    const words = trimFollowingFields(values).split(/\s+/).filter(Boolean);
+    if (words.length < 2) return '';
+    return columns[0].key === 'last'
+      ? composeName(words.slice(1).join(' '), '', words[0])
+      : composeName(words.slice(0, -1).join(' '), '', words[words.length - 1]);
+  }
+
   function nameFromColumns(header, values) {
     const fields = [
-      { key: 'last', pattern: /\b(?:last\s*name|family\s*name|surname|apelyido)\b/i },
+      { key: 'last', pattern: LAST_NAME_LABEL },
       { key: 'given', pattern: /\b(?:first\s*names?|given\s*names?|mga\s*pangalan)\b/i },
       { key: 'middle', pattern: /\b(?:middle\s*names?|middle\s*initial|middlename|gitnang\s*apelyido)\b/i }
     ];
@@ -219,44 +286,102 @@ window.Api = Api;
       extracted[column.key] = trimFollowingFields(valueColumns[index]);
     });
     if (!extracted.last || !extracted.given) return '';
-    return cleanName(extracted.given + ' ' + (extracted.middle || '') + ' ' + extracted.last);
+    return composeName(extracted.given, extracted.middle, extracted.last);
   }
 
   function parseName(lines) {
+    const isNameHeaderLabel = line =>
+      /^\s*(?:last(?:\s*name)?|family(?:\s*name)?|surname|apelyido|first\s*names?|given\s*names?|mga\s*pangalan|middle\s*(?:names?|initials?)?|middlename|gitnang\s*apelyido)\s*[:/-]?\s*$/i.test(line);
+    for (let i = 0; i < lines.length; i++) {
+      if (!isNameHeaderLabel(lines[i])) continue;
+      let end = i;
+      while (end + 1 < lines.length && end - i < 2 && isNameHeaderLabel(lines[end + 1])) end++;
+      const header = lines.slice(i, end + 1).join(' ');
+      const hasLast = LAST_NAME_LABEL.test(header);
+      const hasGiven = /\b(?:first\s*names?|given\s*names?|mga\s*pangalan)\b/i.test(header);
+      if (!hasLast || !hasGiven) continue;
+
+      const values = [];
+      for (const line of lines.slice(end + 1)) {
+        if (looksLikeLabel(line) || looksLikeIdNumber(line) || findDates(line).length || /\d/.test(line)) break;
+        values.push(line);
+        if (values.length === 3) break;
+      }
+      if (!values.length) continue;
+      const row = values.join(' ');
+      const columns = nameFromColumns(header, values.join('  '));
+      if (columns) return columns;
+      const commaName = row.includes(',') ? nameFromCommaLine(row, header) : '';
+      if (commaName) return commaName;
+      const headerRow = nameFromHeaderRow(header, row);
+      if (headerRow) return headerRow;
+    }
+
     for (let i = 0; i < lines.length; i++) {
       const low = lines[i].toLowerCase();
-      const hasLast = /\b(?:last\s*name|family\s*name|surname|apelyido)\b/.test(low);
+      const hasLast = LAST_NAME_LABEL.test(low);
       const hasGiven = /\b(?:first\s*names?|given\s*names?|mga\s*pangalan)\b/.test(low);
       if (hasLast && hasGiven) {
         if (lines[i].includes(':')) {
-          const lastInline = valueAfter([lines[i]], ['last name', 'family name', 'surname', 'apelyido']);
-          const givenInline = valueAfter([lines[i]], ['first names', 'first name', 'given names', 'given name', 'mga pangalan']);
-          const middleInline = valueAfter([lines[i]], ['middle names', 'middle name', 'middle initial', 'middlename', 'gitnang apelyido']);
+          const lastInline = valueAfter([lines[i]], ['last name', 'family name', 'surname', 'apelyido', 'last', 'family'], 2);
+          const givenInline = valueAfter([lines[i]], ['first names', 'first name', 'given names', 'given name', 'mga pangalan'], 2);
+          const middleInline = valueAfter([lines[i]], ['middle names', 'middle name', 'middle initial', 'middlename', 'gitnang apelyido'], 2);
           if (lastInline && givenInline) {
-            if (lastInline.toLowerCase() === givenInline.toLowerCase()) return cleanName(givenInline);
-            return cleanName(givenInline + ' ' + middleInline + ' ' + lastInline);
+            return composeName(givenInline, middleInline, lastInline);
           }
         }
         if (i + 1 < lines.length) {
           const raw = trimFollowingFields(lines[i + 1]);
           if (raw && raw.includes(',')) return nameFromCommaLine(raw, low);
+          const commaAsDot = raw && raw.match(/^\s*(\p{L}{2,})\.\s+(.+)$/u);
+          if (commaAsDot) return nameFromCommaLine(commaAsDot[1] + ', ' + commaAsDot[2], low);
           const columns = nameFromColumns(lines[i], lines[i + 1]);
           if (columns) return columns;
-          if (raw && !looksLikeLabel(raw)) return '';
+          const headerRow = raw && nameFromHeaderRow(lines[i], raw);
+          if (headerRow) return headerRow;
         }
       }
     }
-    const last = valueAfter(lines, ['last name', 'family name', 'surname', 'apelyido']);
-    const given = valueAfter(lines, ['given names', 'given name', 'mga pangalan', 'first names', 'first name']);
-    const middle = valueAfter(lines, ['middle names', 'middle name', 'middle initial', 'middlename', 'gitnang apelyido']);
-    if (last && given) {
-      const lastLower = last.toLowerCase(), givenLower = given.toLowerCase();
-      if (lastLower === givenLower || givenLower.includes(lastLower)) return cleanName(given);
-      if (lastLower.includes(givenLower)) return cleanName(last);
-      return cleanName(given + ' ' + middle + ' ' + last);
+    const last = valueAfter(lines, ['last name', 'family name', 'surname', 'apelyido', 'last', 'family'], 2);
+    const given = valueAfter(lines, ['given names', 'given name', 'mga pangalan', 'first names', 'first name'], 2);
+    const middle = valueAfter(lines, ['middle names', 'middle name', 'middle initial', 'middlename', 'gitnang apelyido'], 2);
+    if (last && given) return composeName(given, middle, last);
+    const full = valueAfter(lines, ['full name', 'pangalan', 'name'], 3, true);
+    if (full) {
+      if (full.includes(',')) return nameFromCommaLine(full, '');
+      const commaAsDot = full.match(/^\s*(\p{L}{2,})\.\s+(.+)$/u);
+      return commaAsDot ? nameFromCommaLine(commaAsDot[1] + ', ' + commaAsDot[2], '') : cleanName(full);
     }
-    const full = valueAfter(lines, ['full name', 'pangalan', 'name'], 2);
-    if (full) return full.includes(',') ? nameFromCommaLine(full, '') : cleanName(full);
+
+    const headerWords = /\b(?:republic|philippines|government|identification|national|pambansang|pagkakakilanlan|passport|license|driver|transportation|signature|address|nationality|birth|expiry|valid|until|sex|male|female|blood|agency)\b/i;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const nameLine = line.replace(/\b(?:middle\s*(?:names?|initials?)?|middlename|middl(?:e)?)\b/gi, ' ');
+      if (looksLikeLabel(nameLine) || looksLikeIdNumber(line) || findDates(line).length ||
+          /\d/.test(line) || headerWords.test(line)) continue;
+      const commaName = nameLine.includes(',') ? nameFromCommaLine(nameLine, '') : '';
+      if (commaName) return commaName;
+      const commaAsDot = nameLine.match(/^\s*(\p{L}{2,})\.\s+(.+)$/u);
+      if (commaAsDot) return nameFromCommaLine(commaAsDot[1] + ', ' + commaAsDot[2], '');
+      let candidate = cleanName(nameLine);
+      let wordCount = candidate.split(/\s+/).filter(Boolean).length;
+      if (wordCount >= 2 && wordCount <= 3) {
+        let nextIndex = i + 1, continuationCount = 0;
+        while (nextIndex < lines.length && continuationCount < 2) {
+          const nextLine = lines[nextIndex];
+          if (looksLikeLabel(nextLine) || looksLikeIdNumber(nextLine) || findDates(nextLine).length ||
+              /\d/.test(nextLine) || headerWords.test(nextLine)) break;
+          const continuation = cleanName(nextLine);
+          const continuationWords = continuation.split(/\s+/).filter(Boolean).length;
+          if (continuationWords < 1 || continuationWords > 3 || wordCount + continuationWords > 7) break;
+          candidate = cleanName(candidate + ' ' + continuation);
+          wordCount = candidate.split(/\s+/).filter(Boolean).length;
+          continuationCount++;
+          nextIndex++;
+        }
+      }
+      if (wordCount >= 2 && wordCount <= 7) return candidate;
+    }
     return '';
   }
 
@@ -326,7 +451,7 @@ window.Api = Api;
         full_name: parseName(lines),
         dob,
         address: parseAddress(lines),
-        id_number: m ? m[0].replace(/ /g, '-') : '',
+        id_number: m ? m[0].replace(/\s+/g, '') : '',
         expiry: dateNear(lines, ['date of expiry', 'valid until', 'expir'])
       }
     };
@@ -354,8 +479,8 @@ window.Api = Api;
       return {
         ok: false,
         detected,
-        message: 'The selected ID type is ' + CONFIG.ID_TYPES[selectedType] + ', but the document appears to be ' +
-          CONFIG.ID_TYPES[detected] + '. Select the matching ID type and scan it again.'
+        message: 'You chose ' + CONFIG.ID_TYPES[selectedType] + ', but this photo looks like a ' +
+          CONFIG.ID_TYPES[detected] + '. Choose the correct type and scan again.'
       };
     }
     return { ok: true, detected };
@@ -366,8 +491,8 @@ window.Api = Api;
     const labels = { full_name: 'full name', dob: 'date of birth', id_number: 'ID number', address: 'address' };
     const missing = CONFIG.REQUIRED.filter(k => !parsed.fields[k]);
     if (missing.length || confidence < CONFIG.MIN_OCR_CONF) {
-      const why = missing.length ? 'Could not reliably read: ' + missing.map(k => labels[k] || k).join(', ') + '.' : 'The text is not clear enough.';
-      return { ok: false, message: why + ' Retake the ID photo flat, in good light, with all text visible.' };
+      const why = missing.length ? 'We could not clearly read your ' + missing.map(k => labels[k] || k).join(', ') + '.' : 'The ID text is too blurry to read.';
+      return { ok: false, message: why + ' Retake the photo with the whole ID flat, in good light, and all text in focus.' };
     }
     return { ok: true };
   }
@@ -409,11 +534,21 @@ window.Api = Api;
   }
 
   function recordBlink(eyeRatio, baseline, state) {
-    const reference = Number.isFinite(baseline) && baseline >= CONFIG.EYE_OPEN_MIN ? baseline : CONFIG.EYE_OPEN_MIN;
+    const reference = Number.isFinite(state.reference) && state.reference > 0
+      ? state.reference
+      : Number.isFinite(baseline) && baseline > 0 ? baseline : CONFIG.EYE_OPEN_MIN;
+    if (!state.opened) {
+      if (eyeRatio >= CONFIG.EYE_OPEN_MIN * 0.65) {
+        state.opened = true;
+        state.reference = eyeRatio;
+      }
+      return false;
+    }
     if (eyeRatio >= reference * CONFIG.EYE_BLINK_REOPEN_RATIO) {
       const blinked = state.closed;
       state.opened = true;
       state.closed = false;
+      state.reference = Math.max(reference, eyeRatio);
       return blinked;
     }
     if (state.opened && eyeRatio <= reference * CONFIG.EYE_BLINK_CLOSED_RATIO) state.closed = true;
@@ -461,30 +596,116 @@ window.Api = Api;
   'use strict';
   const BL = window.BusinessLogic, Api = window.Api, CFG = BL.CONFIG;
   const $ = id => document.getElementById(id);
-  const SCREENS = ['home', 'login', 'signup', 'id', 'face', 'info', 'result', 'dashboard', 'approvals'];
-  const STEP_OF = { id: 1, face: 2, info: 3, result: 5 };       // 5 = every step shown as done
-  let me = null, roles = [], modelsReady = false, registrationInProgress = false, captureCancelled = false, lockRefreshTimer = null;
-  let capturedIdFile = null, idPreviewUrl = null;
+  const SCREENS = ['home', 'login', 'signup', 'signup-credentials', 'id', 'face', 'info', 'result', 'dashboard', 'approvals'];
+  const STEP_OF = { id: 1, face: 3, info: 5, result: 6 };
+  let me = null, roles = [], sharedModelsReady = false, idDetectorReady = false, liveDetectorReady = false;
+  let registrationInProgress = false, captureCancelled = false, lockRefreshTimer = null;
+  let idPreviewUrl = null;
 
   /* ------------------------------------------------------------ helpers */
   function show(name) {
     if (name !== 'face' && name !== 'login') cancelActiveCapture();
     SCREENS.forEach(s => { $('screen-' + s).hidden = s !== name; });
     const step = STEP_OF[name];
-    $('stepper').hidden = !step;
-    if (step) [...$('stepper').children].forEach((li, i) => { li.className = i + 1 < step ? 'done' : i + 1 === step ? 'now' : ''; });
+    updateStepper(step);
     const registering = me && me.status === 'unverified';
     $('btn-logout').hidden = !Api.token() || registering;
     $('btn-logout').textContent = 'Log out';
     $('who').hidden = !me || registering; if (me && !registering) $('who').textContent = me.email;
     window.scrollTo(0, 0);
   }
-  function say(id, text, kind = 'bad') { const el = $(id); el.textContent = text || ''; el.className = 'alert ' + kind; el.hidden = !text; }
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  function updateStepper(step) {
+    $('stepper').hidden = !step;
+    if (step) [...$('stepper').children].forEach((li, i) => {
+      li.className = i + 1 < step ? 'done' : i + 1 === step ? 'now' : '';
+    });
+  }
+  function friendlyMessage(text) {
+    const message = String(text || '');
+    if (/failed to fetch|networkerror|load failed|network request/i.test(message))
+      return 'We could not connect. Check your internet connection and try again.';
+    if (/^You must agree to the consent notice/i.test(message))
+      return 'Please agree to the notice before creating your account.';
+    if (/^Enter a valid email address\.$/i.test(message))
+      return 'Enter an email address in the correct format.';
+    if (/^The backup PIN must be exactly 6 digits\.$/i.test(message))
+      return 'Your backup PIN must contain exactly 6 numbers.';
+    if (/No face template was received/i.test(message))
+      return 'We could not find the photo on your ID. Make sure the full front of the ID is visible.';
+    if (/supabase|postgrest|postgresql|pgrst|jwt|invalid input syntax|face template|descriptor/i.test(message))
+      return 'Something went wrong while checking your information. Please try again. If it keeps happening, contact the administrator.';
+    if (/^TypeError:|^ReferenceError:|^SyntaxError:|Cannot read properties|is not a function/i.test(message))
+      return 'Something went wrong. Please try again. If it keeps happening, contact the administrator.';
+    if (/^Session expired/i.test(message))
+      return 'Your session has ended. Please sign up or log in again.';
+    if (/^This registration has already been submitted and cannot be cancelled here\.$/i.test(message))
+      return 'This signup has already been submitted and cannot be cancelled.';
+    if (/^Too many failed attempts/i.test(message))
+      return message.replace('Too many failed attempts', 'You have tried too many times');
+    if (/^Too many tries\./i.test(message))
+      return 'You have tried too many times. Please wait a few minutes, then try again.';
+    if (/^Too many failed scans\./i.test(message))
+      return 'You have tried too many times. Wait a few minutes, or log in with your PIN.';
+    if (/^Email or PIN is incorrect\.$/i.test(message))
+      return 'That email and PIN do not match. Check them and try again.';
+    if (/^This email is already in use and cannot be registered again\.$/i.test(message))
+      return 'An account with this email already exists. Try logging in instead.';
+    if (/^This email already has a registration in progress/i.test(message))
+      return 'A signup with this email is already in progress. Try another email or contact the administrator.';
+    if (/^This email is already registered\./i.test(message))
+      return 'An account with this email already exists. Try logging in instead.';
+    if (/^This ID is already registered/i.test(message))
+      return 'This ID number is already linked to another account. Contact the administrator if you think this is a mistake.';
+    if (/^Choose a supported ID type\.$/i.test(message))
+      return 'Choose one of the ID types listed on this page.';
+    if (/^Required ID details are missing\.$/i.test(message))
+      return 'We could not read the required details from your ID. Try again with a clear, well-lit photo.';
+    if (/^Enter a valid ID number\.$/i.test(message))
+      return 'Check the ID number and enter it again.';
+    if (/^Full name and ID number are required\.$/i.test(message))
+      return 'Enter your full name and ID number.';
+    if (/^Enter a valid date of birth\.$/i.test(message))
+      return 'Enter a valid date of birth.';
+    if (/^This registration has already been submitted/i.test(message))
+      return 'This signup has already been submitted and cannot be cancelled.';
+    if (/^Choose a role to assign\.$/i.test(message))
+      return 'Choose a role for this person before approving the signup.';
+    if (/^The file could not be read as an image\.$/i.test(message))
+      return 'We could not open this image. Choose a JPG or PNG photo and try again.';
+    if (/^Your account is waiting for admin approval\.$/i.test(message))
+      return 'Your signup is complete. An administrator still needs to approve your account.';
+    if (/^Your registration was rejected\./i.test(message))
+      return 'Your signup was not approved. Please contact the administrator for help.';
+    if (/^Your unfinished registration was cleared/i.test(message))
+      return 'Your previous signup was not finished, so it was cleared. Please sign up again.';
+    if (/Complete the ID scan and face match first/i.test(message))
+      return 'Please finish the ID scan and face check first.';
+    if (/Complete the ID scan first/i.test(message))
+      return 'Please scan your ID first.';
+    if (/face does not match|face not recognized/i.test(message))
+      return 'We could not match your face to the photo on your ID. Try again in good lighting.';
+    if (/^No clear face found\./i.test(message))
+      return 'We could not get a clear view of your face. Center your face in the camera and try again.';
+    if (/captures do not look like the same person|match was not clear enough/i.test(message))
+      return 'We could not confirm a clear face match. Try again in good lighting, or use your PIN to log in.';
+    if (/invalid capture data|incomplete capture|straight-on capture is required/i.test(message))
+      return 'We could not get a clear set of face images. Please try again and follow each instruction.';
+    if (/^Unknown (step|action)\./i.test(message))
+      return 'Something went wrong. Please try again.';
+    if (/^Admins only\./i.test(message))
+      return 'This page is only available to an administrator.';
+    if (/^That account is no longer pending\./i.test(message))
+      return 'This signup has already been reviewed. Refresh the list to see the latest status.';
+    return message;
+  }
+  function say(id, text, kind = 'bad') {
+    const el = $(id), message = friendlyMessage(text);
+    el.textContent = message; el.className = 'alert ' + kind; el.hidden = !message;
+  }
   const roleLabel = key => (roles.find(r => r.key === key) || {}).label || key || '';
   function lockText(isoTime) {
     if (!isoTime || new Date(isoTime) <= new Date()) return '';
-    return 'Too many failed attempts. Try again after ' + new Date(isoTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '.';
+    return 'You have tried too many times. Please try again after ' + new Date(isoTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '.';
   }
   function clearLockRefreshTimer() {
     if (lockRefreshTimer) clearTimeout(lockRefreshTimer);
@@ -502,8 +723,8 @@ window.Api = Api;
       if (!(await refreshMe())) {
         $('btn-scan').disabled = true;
         $('btn-face-start').disabled = true;
-        if (!$('screen-id').hidden) say('msg-id', 'Your registration session expired. Please sign up again.');
-        else if (!$('screen-face').hidden) say('msg-face', 'Your registration session expired. Please sign up again.');
+        if (!$('screen-id').hidden) say('msg-id', 'Your signup session has ended. Please start again.');
+        else if (!$('screen-face').hidden) say('msg-face', 'Your signup session has ended. Please start again.');
         return;
       }
       const lock = lockText(me.locked_until);
@@ -515,10 +736,10 @@ window.Api = Api;
         scheduleLockRefresh();
         return;
       }
-      if (!$('screen-id').hidden) say('msg-id', 'ID scan unlocked. You can try again.', 'good');
-      else if (!$('screen-face').hidden) say('msg-face', 'Face capture unlocked. You can try again.', 'good');
+      if (!$('screen-id').hidden) say('msg-id', 'You can scan your ID again now.', 'good');
+      else if (!$('screen-face').hidden) say('msg-face', 'You can try the face check again now.', 'good');
     } catch (err) {
-      const message = 'Could not refresh the verification lock. Check your connection; it will retry shortly.';
+      const message = 'We could not check when you can try again. Check your connection; we will try again shortly.';
       if (!$('screen-id').hidden) say('msg-id', message, 'warn');
       else if (!$('screen-face').hidden) say('msg-face', message, 'warn');
       lockRefreshTimer = setTimeout(refreshLockState, 5000);
@@ -531,7 +752,7 @@ window.Api = Api;
   }
 
   /* ------------------------------------------------------------ camera + face models */
-  async function startCam(video, facingMode = 'user') {
+  async function startCam(video, facingMode = 'user', mirrorPreview = true) {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
       throw new Error('Camera access is unavailable. Use a supported browser over HTTPS or use your PIN.');
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -539,6 +760,10 @@ window.Api = Api;
       audio: false
     });
     video.srcObject = stream;
+    const track = stream.getVideoTracks()[0];
+    const actualFacingMode = track && track.getSettings ? track.getSettings().facingMode : '';
+    const shouldMirror = mirrorPreview && (actualFacingMode ? actualFacingMode === 'user' : facingMode === 'user');
+    video.classList.toggle('mirror-preview', shouldMirror);
     try {
       await video.play();
       if (!video.videoWidth || !video.videoHeight) {
@@ -564,60 +789,122 @@ window.Api = Api;
     return c;
   }
   async function ensureModels(onStatus) {
-    if (modelsReady) return;
-    onStatus('Loading face models (first time only)...');
+    if (idDetectorReady) return;
+    onStatus('Loading ID face model (first time only)...');
     await Promise.all([
-      faceapi.nets.ssdMobilenetv1.loadFromUri(CFG.MODEL_URL),
+      ensureSharedModels(),
+      faceapi.nets.ssdMobilenetv1.loadFromUri(CFG.MODEL_URL)
+    ]);
+    idDetectorReady = true;
+  }
+  async function ensureSharedModels() {
+    if (sharedModelsReady) return;
+    await Promise.all([
       faceapi.nets.faceLandmark68Net.loadFromUri(CFG.MODEL_URL),
       faceapi.nets.faceRecognitionNet.loadFromUri(CFG.MODEL_URL)
     ]);
-    modelsReady = true;
+    sharedModelsReady = true;
   }
-  const detectorOptions = () => new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 });
+  async function ensureLiveModels(onStatus) {
+    if (liveDetectorReady) return;
+    onStatus('Preparing fast face scan (first time only)...');
+    await Promise.all([
+      ensureSharedModels(),
+      faceapi.nets.tinyFaceDetector.loadFromUri(CFG.MODEL_URL)
+    ]);
+    liveDetectorReady = true;
+  }
+  const detectorOptions = () => new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5, maxResults: 2 });
+  const liveDetectorOptions = () => new faceapi.TinyFaceDetectorOptions({ inputSize: 256, scoreThreshold: 0.5 });
 
-  // One live frame -> pose + 128-number face template, or null when no face is found
-  async function describe(canvas) {
-    const faces = await faceapi.detectAllFaces(canvas, detectorOptions()).withFaceLandmarks().withFaceDescriptors();
-    if (!faces.length) return null;
-    faces.sort((a, b) => b.detection.box.area - a.detection.box.area);
-    const r = faces[0], second = faces[1];
-    if (r.detection.score < 0.5 || r.detection.box.width < canvas.width * 0.1) return null;
+  function cropToFaceGuide(canvas, video) {
+    const camera = video.parentElement;
+    const videoRect = video.getBoundingClientRect();
+    const cameraRect = camera.getBoundingClientRect();
+    const guideSize = parseFloat(getComputedStyle(camera, '::before').width) - 4;
+    const scale = Math.max(videoRect.width / canvas.width, videoRect.height / canvas.height);
+    if (!Number.isFinite(guideSize) || guideSize <= 0 || !Number.isFinite(scale) || scale <= 0)
+      throw new Error('The face guide is not ready. Restart the camera and try again.');
+
+    const visibleWidth = videoRect.width / scale;
+    const visibleHeight = videoRect.height / scale;
+    const centerX = (canvas.width - visibleWidth) / 2 +
+      (cameraRect.left + cameraRect.width / 2 - videoRect.left) / scale;
+    const centerY = (canvas.height - visibleHeight) / 2 +
+      (cameraRect.top + cameraRect.height / 2 - videoRect.top) / scale;
+    const size = Math.min(canvas.width, canvas.height, Math.round(guideSize / scale));
+    const left = Math.round(centerX - size / 2), top = Math.round(centerY - size / 2);
+    const region = document.createElement('canvas');
+    region.width = size; region.height = size;
+    const context = region.getContext('2d');
+    context.fillStyle = '#000';
+    context.fillRect(0, 0, size, size);
+    context.beginPath();
+    context.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
+    context.clip();
+    context.drawImage(canvas, left, top, size, size, 0, 0, size, size);
+    return region;
+  }
+
+  function faceFitsGuide(box, size) {
+    const center = size / 2;
+    const faceCenterX = box.x + box.width / 2, faceCenterY = box.y + box.height / 2;
+    return Math.hypot(faceCenterX - center, faceCenterY - center) <= center;
+  }
+
+  // Detect poses on every frame; run the slower descriptor model only on accepted frames.
+  async function describe(canvas, video, includeDescriptor = false) {
+    const region = cropToFaceGuide(canvas, video);
+    let task = faceapi.detectAllFaces(region, liveDetectorOptions()).withFaceLandmarks();
+    if (includeDescriptor) task = task.withFaceDescriptors();
+    const faces = await task;
+    const insideGuide = faces.filter(face => faceFitsGuide(face.detection.box, region.width));
+    if (!insideGuide.length) return null;
+    insideGuide.sort((a, b) => b.detection.box.area - a.detection.box.area);
+    const r = insideGuide[0], second = insideGuide[1];
+    if (r.detection.score < 0.5 || r.detection.box.width < region.width * 0.1) return null;
     if (second && second.detection.box.area > r.detection.box.area * 0.55) return null;
-    return { ...BL.poseFromLandmarks(r.landmarks.positions, r.detection.box.width, canvas.width),
-             descriptor: Array.from(r.descriptor, x => +x.toFixed(5)) };
+    const info = BL.poseFromLandmarks(r.landmarks.positions, r.detection.box.width, region.width);
+    if (!includeDescriptor) return info;
+    return { ...info, descriptor: Array.from(r.descriptor, x => +x.toFixed(5)) };
   }
 
   async function capturePose(video, pose, straight, sayEl) {
     let steadyFrames = 0, captured = null;
-    const blinkState = { opened: false, closed: false };
     const eyeBaseline = straight && Number.isFinite(straight.eyeRatio) && straight.eyeRatio >= CFG.EYE_OPEN_MIN
       ? straight.eyeRatio : null;
+    const blinkState = { opened: pose.key === 'blink' && eyeBaseline !== null, closed: false, reference: eyeBaseline };
     sayEl.textContent = pose.text + ' — hold still while the camera checks.';
     while (!captureCancelled) {
-      const canvas = snap(video), info = await describe(canvas);
+      const canvas = snap(video), info = await describe(canvas, video);
       if (captureCancelled) return null;
       if (pose.key === 'blink') {
         if (info && info.label === 'straight' && BL.recordBlink(info.eyeRatio, eyeBaseline, blinkState)) {
-          return { pose: pose.key, info: { ...info, blinked: true } };
+          const capturedInfo = await describe(canvas, video, true);
+          if (capturedInfo) return { pose: pose.key, info: { ...capturedInfo, blinked: true } };
         }
         sayEl.textContent = !info ? 'Center one face in the guide and use even lighting.'
           : blinkState.closed ? 'Blink detected — open your eyes.'
           : blinkState.opened ? 'Close and reopen your eyes to blink.'
           : 'Open your eyes, then blink once.';
-        await sleep(100);
         continue;
       }
       if (BL.poseMatches(pose.key, info, straight)) {
         steadyFrames++;
-        captured = { pose: pose.key, info };
-        if (steadyFrames >= 2) return captured;
-        sayEl.textContent = 'Pose detected — hold still...';
+        if (steadyFrames >= 2) {
+          const capturedInfo = await describe(canvas, video, true);
+          if (capturedInfo && BL.poseMatches(pose.key, capturedInfo, straight)) {
+            captured = { pose: pose.key, info: capturedInfo };
+            return captured;
+          }
+          steadyFrames = 0;
+        }
+        sayEl.textContent = 'Good, hold still...';
       } else {
         steadyFrames = 0;
         if (!info) sayEl.textContent = 'Center one face in the guide and use even lighting.';
         else sayEl.textContent = pose.text + ' — hold the pose until it is detected.';
       }
-      await sleep(120);
     }
     return null;
   }
@@ -636,13 +923,29 @@ window.Api = Api;
   }
 
   /* ------------------------------------------------------------ sign up */
+  $('btn-consent-continue').onclick = () => {
+    say('msg-signup', '');
+    if (!$('su-consent').checked) return say('msg-signup', 'Please tick the box to agree before continuing.');
+    say('msg-signup-credentials', '');
+    show('signup-credentials');
+    $('su-email').focus();
+  };
+  $('btn-signup-back-consent').onclick = () => {
+    say('msg-signup-credentials', '');
+    show('signup');
+  };
+
   $('signup-form').onsubmit = async e => {
-    e.preventDefault(); say('msg-signup', '');
+    e.preventDefault(); say('msg-signup-credentials', '');
+    if (!$('su-consent').checked) {
+      show('signup');
+      return say('msg-signup', 'Please agree to the notice before creating your account.');
+    }
     try {
       const r = await Api.signup($('su-email').value, $('su-pin').value, $('su-consent').checked);
-      if (!r.ok) return say('msg-signup', r.message);
+      if (!r.ok) return say('msg-signup-credentials', r.message);
       Api.setToken(r.token); registrationInProgress = true; $('signup-form').reset(); await route();
-    } catch (err) { say('msg-signup', err.message); }
+    } catch (err) { say('msg-signup-credentials', err.message); }
   };
 
   /* ------------------------------------------------------------ step 1: ID upload + OCR */
@@ -656,25 +959,22 @@ window.Api = Api;
     $('btn-id-retry').hidden = false;
   }
   function resetIdRetry() {
-    capturedIdFile = null;
     $('id-file').value = '';
     showIdPreview(null);
-    stopCam($('id-video'));
-    $('id-camera-wrap').hidden = true;
     $('btn-scan').textContent = 'Scan ID';
     $('btn-id-retry').hidden = true;
-    say('msg-id', 'Choose or capture a clearer image, then scan it again.', 'warn');
+    say('msg-id', 'This photo was not clear enough. Choose or take another photo, then scan again.', 'warn');
   }
   function showIdPreview(file) {
     const img = $('id-preview');
     if (idPreviewUrl) URL.revokeObjectURL(idPreviewUrl);
+    img.classList.remove('mirror-preview');
     if (!file) { img.hidden = true; img.removeAttribute('src'); idPreviewUrl = null; return; }
     idPreviewUrl = URL.createObjectURL(file);
     img.src = idPreviewUrl; img.hidden = false;
   }
-  const selectedIdFile = () => capturedIdFile || $('id-file').files[0];
+  const selectedIdFile = () => $('id-file').files[0];
   $('id-file').onchange = () => {
-    capturedIdFile = null;
     showIdPreview($('id-file').files[0]);
     $('btn-scan').textContent = 'Scan ID';
     $('btn-id-retry').hidden = true;
@@ -687,34 +987,6 @@ window.Api = Api;
   };
   $('btn-id-retry').onclick = resetIdRetry;
   $('btn-id-upload').onclick = () => $('id-file').click();
-  $('btn-id-camera').onclick = async () => {
-    const wrap = $('id-camera-wrap');
-    try {
-      await startCam($('id-video'), 'environment');
-      wrap.hidden = false;
-      say('msg-id', '');
-    } catch (err) {
-      say('msg-id', 'Could not open the camera. Allow camera access or upload an image instead.');
-    }
-  };
-  $('btn-id-camera-close').onclick = () => {
-    stopCam($('id-video'));
-    $('id-camera-wrap').hidden = true;
-  };
-  $('btn-id-capture').onclick = () => {
-    const canvas = snap($('id-video'));
-    canvas.toBlob(blob => {
-      if (!blob) return say('msg-id', 'Could not capture the ID image. Try again or upload an image.');
-      capturedIdFile = new File([blob], 'captured-id.jpg', { type: 'image/jpeg' });
-      $('id-file').value = '';
-      showIdPreview(capturedIdFile);
-      $('btn-scan').textContent = 'Scan ID';
-      $('btn-id-retry').hidden = true;
-      stopCam($('id-video'));
-      $('id-camera-wrap').hidden = true;
-      say('msg-id', '');
-    }, 'image/jpeg', 0.94);
-  };
 
   function fileToCanvas(file, maxW) {
     return new Promise((resolve, reject) => {
@@ -796,14 +1068,14 @@ window.Api = Api;
     const value = String(candidate.parsed.fields[key] || '').trim();
     if (!value) return -Infinity;
     const text = candidate.text || '';
-    let score = candidate.confidence * 2;
+    let score = key === 'full_name' ? candidate.confidence * 0.5 : candidate.confidence * 2;
     if (key === 'full_name') {
       const words = value.split(/\s+/).filter(Boolean);
       if (!/\p{L}/u.test(value)) return -Infinity;
       score += Math.min(words.length, 4) + (words.length > 1 ? 1 : 0);
       if (words.length > 7) score -= (words.length - 7) * 2;
-      score -= Math.max(0, words.filter(word => /^\p{L}$/u.test(word)).length - 1) * 2;
-      if (/\b(?:full\s*name|surname|family\s*name|last\s*name|given\s*names?|first\s*names?|name|apelyido|mga\s*pangalan|gitnang\s*apelyido)\b/i.test(text)) score += 3;
+      score -= words.filter(word => /^\p{L}$/u.test(word)).length * 2;
+      if (/\b(?:full\s*name|surname|family\s*name|last\s*name|given\s*names?|first\s*names?|name|apelyido|mga\s*pangalan|gitnang\s*apelyido)\b/i.test(text)) score += 1;
       if (/\b(?:republic|philippines|identification|passport|license|nationality|signature)\b/i.test(value)) score -= 8;
     } else if (key === 'dob' || key === 'expiry') {
       if (BL.calcAge(value) === null && key === 'dob') return -Infinity;
@@ -831,11 +1103,14 @@ window.Api = Api;
       if (score > group.score) { group.candidate = candidate; group.score = score; }
       groups.set(normalized, group);
     }
-    const majority = Math.floor(candidates.length / 2) + 1;
+    const candidateCount = key === 'full_name'
+      ? [...groups.values()].reduce((count, group) => count + group.count, 0)
+      : candidates.length;
+    const majority = Math.floor(candidateCount / 2) + 1;
     const ranked = [...groups.values()].sort((a, b) => b.count - a.count || b.score - a.score);
     const bestScore = candidates.reduce((score, candidate) =>
       Math.max(score, fieldReadScore(candidate, key)), -Infinity);
-    const agreementMargin = key === 'address' ? 0.05 : 1.5;
+    const agreementMargin = key === 'address' ? 0.05 : key === 'full_name' ? 0.1 : 1.5;
     if (ranked.length && ranked[0].count >= majority &&
         bestScore - ranked[0].score <= agreementMargin) return ranked[0].candidate;
 
@@ -859,6 +1134,25 @@ window.Api = Api;
   const PADDLE_OCR_MODULE_URL = 'https://cdn.jsdelivr.net/npm/@paddleocr/paddleocr-js@0.4.2/+esm';
   const PADDLE_OCR_WASM_PATHS = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.26.0/dist/';
   let paddleOcrPromise = null;
+  let tesseractWorkerPromise = null;
+
+  async function getTesseractWorker() {
+    if (!tesseractWorkerPromise) {
+      tesseractWorkerPromise = Tesseract.createWorker('eng', 1).catch(error => {
+        tesseractWorkerPromise = null;
+        throw error;
+      });
+    }
+    return tesseractWorkerPromise;
+  }
+
+  async function recognizeIdText(worker, canvas, pageSegMode) {
+    await worker.setParameters({
+      tessedit_pageseg_mode: String(pageSegMode),
+      preserve_interword_spaces: '1'
+    });
+    return worker.recognize(canvas);
+  }
 
   function cropDobLabelArea(canvas, words) {
     const labelWords = (words || []).filter(word =>
@@ -919,50 +1213,65 @@ window.Api = Api;
     }
   }
   async function readId(canvas, type, detailCanvas = canvas) {
+    const worker = await getTesseractWorker();
     const passes = [
       { threshold: false, pageSegMode: 6 },
-      { threshold: true, pageSegMode: 11 },
-      { threshold: false, pageSegMode: 4 }
+      { threshold: true, pageSegMode: 11 }
     ];
     const candidates = [];
     const detailCandidates = [];
     const texts = [];
     for (const pass of passes) {
-      const result = await Tesseract.recognize(forOcr(canvas, pass.threshold), 'eng', {
-        tessedit_pageseg_mode: pass.pageSegMode,
-        preserve_interword_spaces: '1'
-      });
+      const result = await recognizeIdText(worker, forOcr(canvas, pass.threshold), pass.pageSegMode);
       texts.push(result.data.text);
       const candidate = { parsed: BL.parseIdText(result.data.text, type), confidence: result.data.confidence / 100, text: result.data.text };
       candidates.push(candidate);
     }
-    for (const pass of [
-      { enhance: false, pageSegMode: 6 },
-      { enhance: true, pageSegMode: 11 }
-    ]) {
-      const processedCanvas = forOcr(detailCanvas, false, pass.enhance);
-      const result = await Tesseract.recognize(processedCanvas, 'eng', {
-        tessedit_pageseg_mode: pass.pageSegMode,
-        preserve_interword_spaces: '1'
+    const primaryBest = candidates.reduce((current, candidate) =>
+      idReadScore(candidate) > idReadScore(current) ? candidate : current);
+    const conflictingFields = ['full_name', 'dob', 'id_number'].some(key => {
+      const values = candidates.map(candidate =>
+        String(candidate.parsed.fields[key] || '').toLowerCase().replace(/[^a-z0-9]/g, ''))
+        .filter(Boolean);
+      return new Set(values).size > 1;
+    });
+    const missingLabeledAddress = !primaryBest.parsed.fields.address &&
+      /\b(?:address|residence|tirahan)\b/i.test(texts.join('\n'));
+    const primaryCheck = BL.checkOcr(primaryBest.parsed, primaryBest.confidence);
+    const needsFallback = !primaryCheck.ok || primaryBest.confidence < 0.5 ||
+      conflictingFields || missingLabeledAddress;
+
+    if (needsFallback) {
+      const fallbackResult = await recognizeIdText(worker, forOcr(canvas, false), 4);
+      texts.push(fallbackResult.data.text);
+      candidates.push({
+        parsed: BL.parseIdText(fallbackResult.data.text, type),
+        confidence: fallbackResult.data.confidence / 100,
+        text: fallbackResult.data.text
       });
-      detailCandidates.push({
-        parsed: BL.parseIdText(result.data.text, type),
-        confidence: result.data.confidence / 100,
-        text: result.data.text
-      });
-      if (pass.enhance === false) {
-        const dobArea = cropDobLabelArea(processedCanvas, result.data.words);
-        if (dobArea) {
-          const preparedDobArea = forOcr(dobArea, false, false);
-          const dobResult = await Tesseract.recognize(preparedDobArea, 'eng', {
-            tessedit_pageseg_mode: 6,
-            preserve_interword_spaces: '1'
-          });
-          detailCandidates.push({
-            parsed: BL.parseIdText(dobResult.data.text, type),
-            confidence: dobResult.data.confidence / 100,
-            text: dobResult.data.text
-          });
+
+      for (const pass of [
+        { enhance: false, pageSegMode: 6 },
+        { enhance: true, pageSegMode: 11 }
+      ]) {
+        const processedCanvas = forOcr(detailCanvas, false, pass.enhance);
+        const result = await recognizeIdText(worker, processedCanvas, pass.pageSegMode);
+        detailCandidates.push({
+          parsed: BL.parseIdText(result.data.text, type),
+          confidence: result.data.confidence / 100,
+          text: result.data.text
+        });
+        if (pass.enhance === false) {
+          const dobArea = cropDobLabelArea(processedCanvas, result.data.words);
+          if (dobArea) {
+            const preparedDobArea = forOcr(dobArea, false, false);
+            const dobResult = await recognizeIdText(worker, preparedDobArea, 6);
+            detailCandidates.push({
+              parsed: BL.parseIdText(dobResult.data.text, type),
+              confidence: dobResult.data.confidence / 100,
+              text: dobResult.data.text
+            });
+          }
         }
       }
     }
@@ -990,7 +1299,7 @@ window.Api = Api;
     try {
       const r = await Api.reportFailure(kind);
       if (r.locked) {
-        extra = ' Too many failed attempts. Try again in 15 minutes.';
+        extra = ' You have tried too many times. Please wait 15 minutes before trying again.';
         $(btnId).disabled = true;
         me.locked_until = new Date(Date.now() + 15 * 60000).toISOString();
         scheduleLockRefresh();
@@ -1008,9 +1317,10 @@ window.Api = Api;
     if (!type) return say('msg-id', 'Choose the type of ID you are uploading.');
     if (!file || !/^image\/(jpeg|png)$/.test(file.type) || file.size > 5 * 1024 * 1024) {
       showIdRetry();
-      return say('msg-id', 'Capture or choose a JPG or PNG image up to 5 MB.');
+      return say('msg-id', 'Choose or take a JPG or PNG photo smaller than 5 MB.');
     }
     $('btn-id-retry').hidden = true;
+    updateStepper(2);
     btn.textContent = 'Scanning ID...';
     btn.disabled = true;
     try {
@@ -1022,17 +1332,21 @@ window.Api = Api;
       if (BL.laplacianVariance(g.data, g.w, g.h) < CFG.MIN_SHARPNESS)
         return await failStep('id', 'msg-id', 'btn-scan', 'The photo is too blurry. Retake it in good light and hold the camera steady.');
 
-      setStatus('Reading the text on the ID (this can take a few seconds)...');
+      setStatus('Reading the details on your ID...');
       const result = await readId(canvas, type, detailCanvas);
       const typeCheck = BL.checkIdType(result.texts, type);
       if (!typeCheck.ok) {
         showIdRetry();
         return say('msg-id', typeCheck.message);
       }
-      const paddleDetails = await readPaddleDetails(detailCanvas, type);
       const fields = { ...result.parsed.fields };
-      if (paddleDetails && paddleDetails.full_name) fields.full_name = paddleDetails.full_name;
-      if (paddleDetails && paddleDetails.address) fields.address = paddleDetails.address;
+      const hasAddressLabel = /\b(?:address|residence|tirahan)\b/i.test(result.texts.join('\n'));
+      if (!fields.full_name || (!fields.address && hasAddressLabel)) {
+        setStatus('Taking another look at the ID details...');
+        const paddleDetails = await readPaddleDetails(resizeCanvas(detailCanvas, 1800), type);
+        if (paddleDetails && paddleDetails.full_name) fields.full_name = paddleDetails.full_name;
+        if (paddleDetails && paddleDetails.address) fields.address = paddleDetails.address;
+      }
       const parsed = { ...result.parsed, fields }, conf = result.confidence;
       const check = BL.checkOcr(parsed, conf);
       if (!check.ok) return await failStep('id', 'msg-id', 'btn-scan', check.message);
@@ -1041,7 +1355,7 @@ window.Api = Api;
       setStatus('Finding the face photo on the ID...');
       const faces = await faceapi.detectAllFaces(canvas, detectorOptions()).withFaceLandmarks().withFaceDescriptors();
       if (!faces.length)
-        return await failStep('id', 'msg-id', 'btn-scan', 'No face photo was found on the ID. Make sure the whole front of the ID is visible.');
+        return await failStep('id', 'msg-id', 'btn-scan', 'We could not find the photo on your ID. Make sure the full front of the ID is visible, then try again.');
       const idFace = faces.reduce((a, b) => (b.detection.box.area > a.detection.box.area ? b : a));
 
       setStatus('Saving...');
@@ -1082,12 +1396,12 @@ window.Api = Api;
 
   $('btn-face-start').onclick = async () => {
     const btn = $('btn-face-start'), video = $('face-video'), sayEl = $('face-say');
-    captureCancelled = false; btn.disabled = true; say('msg-face', ''); updateFaceProgress(0);
+    captureCancelled = false; btn.disabled = true; say('msg-face', ''); updateFaceProgress(0); updateStepper(3);
     try {
-      await ensureModels(t => { sayEl.textContent = t; });
+      await ensureLiveModels(t => { sayEl.textContent = t; });
       if (captureCancelled) return;
       try { await startCam(video); }
-      catch (e) { say('msg-face', 'Camera access is blocked. Allow the camera and try again.'); return; }
+      catch (e) { say('msg-face', 'We could not access your camera. Allow camera access in your browser, then try again.'); return; }
       if (captureCancelled) { stopCam(video); return; }
 
       const shots = [];
@@ -1098,26 +1412,27 @@ window.Api = Api;
         if (!captured) return;
         shots.push(captured);
         updateFaceProgress(1);
-        await sleep(400);
         if (captureCancelled) return;
       }
-      stopCam(video); sayEl.textContent = 'Checking your captures...';
+      stopCam(video); sayEl.textContent = 'Checking your face...';
 
       const infos = {};
       for (const s of shots) infos[s.pose] = s.info;
       const chk = BL.checkPoses(infos);                       // did the person follow each instruction?
       if (!chk.ok) {
-        sayEl.textContent = 'Capture not accepted.';
+        sayEl.textContent = 'We could not confirm all the camera checks.';
         return await failStep('face', 'msg-face', 'btn-face-start',
-          'These captures did not follow the instruction: ' + chk.failed.join(', ') + '. Face the camera in good light and repeat.');
+          'We could not confirm all the camera checks. Follow each instruction in good lighting, then try again.');
       }
 
       if (captureCancelled) return;
+      updateStepper(4);
       const r = await Api.saveFace(chk.passed.map(p => ({ pose: p, descriptor: infos[p].descriptor })));   // server decides the match
       if (captureCancelled) return;
-      if (!r.ok) { sayEl.textContent = 'Face not matched.'; return await failStep('face', 'msg-face', 'btn-face-start', r.message); }
-      sayEl.textContent = 'Face matches the ID.';
-      say('msg-face', 'Face registered and matched with the ID photo.', 'good');
+      if (!r.ok) { sayEl.textContent = 'We could not confirm a match.'; return await failStep('face', 'msg-face', 'btn-face-start', r.message); }
+      sayEl.textContent = 'Your face matches the photo on the ID.';
+      say('msg-face', 'Face check complete. Your face matches the photo on your ID.', 'good');
+      updateStepper(4);
       btn.hidden = true; $('btn-face-next').hidden = false;
     } catch (err) {
       say('msg-face', err.message);
@@ -1160,9 +1475,9 @@ window.Api = Api;
   function showResult() {
     show('result');
     const t = {
-      pending:  ['Verification successful', 'Your ID was scanned and your face matched the ID photo. Your account now waits for admin approval.', 'good'],
-      rejected: ['Registration rejected', 'An admin rejected this registration. Contact the restaurant admin.', 'bad'],
-      active:   ['Account active', 'Your account is approved. You can log in with your face.', 'good']
+      pending:  ['Signup received — approval pending', 'We read the details on your ID and matched your face to its photo. An administrator still needs to check your original ID and approve your account.', 'warn'],
+      rejected: ['Signup not approved', 'Your signup was not approved. Please contact the administrator for help.', 'bad'],
+      active:   ['Account approved', 'Your account is ready. You can log in with your face or PIN.', 'good']
     }[me.status] || ['Verification', '', 'warn'];
     $('result-title').textContent = t[0]; say('result-msg', t[1], t[2]);
     const rows = [['Name', me.full_name], ['ID type', CFG.ID_TYPES[me.id_type] || me.id_type], ['ID number', me.id_number],
@@ -1177,10 +1492,10 @@ window.Api = Api;
     const btn = $('btn-login-start'), video = $('login-video'), sayEl = $('login-say');
     captureCancelled = false; btn.disabled = true; say('msg-login', '');
     try {
-      await ensureModels(t => { sayEl.textContent = t; });
+      await ensureLiveModels(t => { sayEl.textContent = t; });
       if (captureCancelled) return;
       try { await startCam(video); }
-      catch (e) { say('msg-login', 'Camera access is blocked. Allow camera access, or choose the PIN option below.'); return; }
+      catch (e) { say('msg-login', 'We could not access your camera. Allow camera access in your browser, or choose the PIN option below.'); return; }
       if (captureCancelled) { stopCam(video); return; }
 
       const shots = [];
@@ -1190,11 +1505,11 @@ window.Api = Api;
         if (!shot) return;
         shots.push(shot);
       }
-      stopCam(video); sayEl.textContent = 'Checking your face against the registered ID...';
+      stopCam(video); sayEl.textContent = 'Checking your face...';
       if (captureCancelled) return;
       const baseline = shots[0].info;
       if (shots.some(shot => faceapi.euclideanDistance(baseline.descriptor, shot.info.descriptor) > CFG.SAME_PERSON_DIST)) {
-        return say('msg-login', 'The captures do not look like the same person. Try again.');
+        return say('msg-login', 'We could not confirm that all the face images match. Try again in good lighting.');
       }
       const r = await Api.faceLogin(baseline.descriptor);
       if (captureCancelled) return;
@@ -1246,7 +1561,7 @@ window.Api = Api;
     try {
       const r = await Api.listPending();
       if (!r.ok) return say('msg-approvals', r.message);
-      if (!r.items.length) return say('msg-approvals', 'No accounts are waiting for approval.', 'warn');
+      if (!r.items.length) return say('msg-approvals', 'There are no signups to review right now.', 'warn');
       r.items.forEach(p => list.append(approvalCard(p)));
     } catch (err) { say('msg-approvals', err.message); }
   }
@@ -1271,12 +1586,12 @@ window.Api = Api;
     rejectRow.append(lblRea, no);
 
     const decide = async (action) => {
-      if (action === 'approve' && !sel.value) return say('msg-approvals', 'Choose a role to assign before approving.');
+      if (action === 'approve' && !sel.value) return say('msg-approvals', 'Choose a role for this person before approving the signup.');
       ok.disabled = no.disabled = true;
       try {
         const r = await Api.decide(p.id, action, sel.value, reason.value);
         if (!r.ok) { say('msg-approvals', r.message); ok.disabled = no.disabled = false; return; }
-        box.remove(); say('msg-approvals', action === 'approve' ? 'Account approved.' : 'Account rejected.', 'good');
+        box.remove(); say('msg-approvals', action === 'approve' ? 'Signup approved.' : 'Signup rejected.', 'good');
       } catch (err) { say('msg-approvals', err.message); ok.disabled = no.disabled = false; }
     };
     ok.onclick = () => decide('approve'); no.onclick = () => decide('reject');
@@ -1285,32 +1600,31 @@ window.Api = Api;
 
   /* ------------------------------------------------------------ navigation + start */
   function resetRegistrationUi() {
-    cancelActiveCapture(); stopCam($('id-video'));
+    cancelActiveCapture();
     clearLockRefreshTimer();
-    capturedIdFile = null;
     registrationInProgress = false;
     $('id-file').value = '';
-    $('id-camera-wrap').hidden = true;
     showIdPreview(null);
     $('id-type').selectedIndex = 0;
     $('btn-scan').textContent = 'Scan ID'; $('btn-id-retry').hidden = true;
     $('id-status').textContent = ''; $('id-status').hidden = true;
-    $('signup-form').reset(); $('info-form').reset(); $('pin-form').reset();
+    $('signup-form').reset(); $('su-consent').checked = false;
+    $('info-form').reset(); $('pin-form').reset();
     $('pin-form').hidden = true; $('face-login').hidden = false;
-    ['msg-signup', 'msg-id', 'msg-face', 'msg-info', 'msg-pin', 'msg-login'].forEach(id => say(id, ''));
+    ['msg-signup', 'msg-signup-credentials', 'msg-id', 'msg-face', 'msg-info', 'msg-pin', 'msg-login'].forEach(id => say(id, ''));
     $('btn-scan').disabled = false; $('btn-face-start').disabled = false;
     $('btn-face-start').hidden = false; $('btn-face-next').hidden = true;
   }
   async function cancelRegistration() {
     if (!Api.token()) { me = null; resetRegistrationUi(); show('home'); return; }
-    if (!window.confirm('Leave registration? Your unsubmitted information will be deleted.')) return;
+    if (!    window.confirm('Leave signup? Your unfinished information will be deleted.')) return;
     cancelActiveCapture();
     try {
       const r = await Api.cancelSignup();
-      if (!r.ok) return window.alert(r.message);
+      if (!r.ok) return window.alert(friendlyMessage(r.message));
       Api.setToken(null); me = null; registrationInProgress = false; resetRegistrationUi(); show('home');
     } catch (err) {
-      window.alert('Could not clear the unfinished registration: ' + err.message);
+      window.alert(friendlyMessage('We could not clear your unfinished signup. Please try again. ' + err.message));
     }
   }
   document.querySelectorAll('[data-cancel-signup]').forEach(button => {
@@ -1342,6 +1656,7 @@ window.Api = Api;
   $('go-signup').onclick = () => {
     resetRegistrationUi();
     say('msg-signup', '');
+    say('msg-signup-credentials', '');
     show('signup');
   };
   document.querySelectorAll('[data-go]').forEach(b => { b.onclick = () => { cancelActiveCapture(); me = Api.token() ? me : null; show(b.dataset.go); }; });
@@ -1353,7 +1668,7 @@ window.Api = Api;
   (async function init() {
     Object.entries(CFG.ID_TYPES).forEach(([k, v]) => $('id-type').add(new Option(v, k)));
     $('id-supported').textContent = Object.values(CFG.ID_TYPES).join(', ');
-    try { roles = await Api.roles(); } catch (e) { say('msg-signup', 'Could not load roles from Supabase.'); }
+    try { roles = await Api.roles(); } catch (e) { say('msg-signup', 'We could not load signup options. Check your connection and try again.'); }
     try { await route(); } catch (e) { show('home'); }
   })();
 })();

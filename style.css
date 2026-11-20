@@ -42,15 +42,15 @@ dt{color:var(--muted)} dd{margin:0}
 /* ===== CAMERA: camera, ID preview, approval cards ===== */
 /* camera.css - verification screens: camera, ID preview, approval cards */
 .cam{position:relative;background:#0e1512;border-radius:8px;overflow:hidden;aspect-ratio:4/3;margin-top:14px}
-.cam video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
-.cam:before{content:"";position:absolute;z-index:1;inset:12% 27%;border:2px solid rgba(255,255,255,.75);border-radius:50%;pointer-events:none}
+.cam video{width:100%;height:100%;object-fit:cover;transform:none}
+.cam video.mirror-preview{transform:scaleX(-1)}
+.cam:before{content:"";position:absolute;z-index:1;top:50%;left:50%;width:58%;max-width:300px;aspect-ratio:1/1;height:auto;transform:translate(-50%,-50%);border:2px solid rgba(255,255,255,.88);border-radius:50%;pointer-events:none}
 .cam .say{position:absolute;z-index:2;left:0;right:0;bottom:0;padding:12px;background:rgba(14,21,18,.72);color:#fff;text-align:center;font-weight:600}
-#screen-login #face-login .cam{width:calc(100% + 32px);margin-left:-16px}
+#screen-login{max-width:620px}
+#screen-login #face-login .cam,#screen-face .face-capture-cam{width:min(594px,calc(100vw - 48px));max-width:none;height:auto;aspect-ratio:1.15/1;margin:14px 0 0;left:50%;transform:translateX(-50%)}
 #screen-login #face-login .cam .say{padding:14px;font-size:1.05rem}
 #screen-login #face-login #btn-login-start{padding:14px 16px}
 .cam.id-camera:before{display:none}
-.cam.id-camera video{transform:none}
-.face-capture-cam:before{display:none}
 .face-progress{position:absolute;z-index:1;inset:0;pointer-events:none}
 .face-progress svg{display:block;width:100%;height:100%;overflow:visible}
 .face-progress-track,.face-progress-fill{fill:none}
@@ -60,6 +60,7 @@ dt{color:var(--muted)} dd{margin:0}
 .camera-controls{position:absolute;z-index:3;left:8px;right:8px;bottom:8px;display:flex;gap:8px}
 .camera-controls .btn{margin:0;padding:8px}
 .preview{display:block;max-width:100%;max-height:220px;margin-top:12px;border:1px solid var(--line);border-radius:6px}
+.preview.mirror-preview{transform:scaleX(-1)}
 .req{border:1px solid var(--line);border-radius:8px;padding:18px;margin-top:16px}
 .req .row{display:flex;gap:10px;align-items:end;margin-top:14px}
 .req .row>*{flex:1}
@@ -77,6 +78,7 @@ dt{color:var(--muted)} dd{margin:0}
   dl{grid-template-columns:minmax(0,1fr);gap:2px}
   dd{margin-bottom:8px;overflow-wrap:anywhere}
   .cam:not(.id-camera){aspect-ratio:3/4;max-height:65vh}
+  #screen-login #face-login .cam,#screen-face .face-capture-cam{aspect-ratio:3/4;max-height:65vh}
   .preview{max-height:32vh}
   .btn,.btn-link{min-height:44px}
 }
